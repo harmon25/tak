@@ -384,7 +384,9 @@ defmodule Tak.Worktrees do
                  "postgres",
                  "-c",
                  "CREATE DATABASE \"#{database}\" TEMPLATE \"#{template}\""
-               ], stderr_to_stdout: true) do
+               ],
+               stderr_to_stdout: true
+             ) do
           {_, 0} ->
             :ok
 
@@ -406,7 +408,14 @@ defmodule Tak.Worktrees do
   end
 
   defp do_copy_build_artifacts(source_root, dest_root) do
-    for artifact <- ["deps", "_build"] do
+    # Only copy `deps` — `_build` contains absolute paths in Mix manifests
+    # (e.g. _build/dev/.mix/compile.elixir, _build/dev/lib/*/ .mix) that
+    # reference the source repo's absolute location. A raw CoW copy would
+    # leave the worktree's manifest pointing at the original repo, breaking
+    # incremental `mix compile` detection for files edited in the worktree.
+    # `deps` is source-only and safe to reflink; `_build` is rebuilt via
+    # `mix deps.get` + `mix compile` on first use.
+    for artifact <- ["deps"] do
       src = Path.join(source_root, artifact)
       dest = Path.join(dest_root, artifact)
 

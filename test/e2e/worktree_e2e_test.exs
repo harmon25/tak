@@ -72,9 +72,10 @@ defmodule Tak.E2E.WorktreeTest do
 
     File.write!(Path.join(repo, "README.md"), "# e2e tmp")
 
-    # Fake deps/_build to exercise CoW copy
+    # Fake deps to exercise CoW copy (_build is not copied - manifests have absolute paths)
     File.mkdir_p!(Path.join(repo, "deps/fake_dep"))
     File.write!(Path.join(repo, "deps/fake_dep/README"), "fake")
+    # _build exists but should not be copied - leave a marker to prove it wasn't
     File.mkdir_p!(Path.join(repo, "_build/dev/lib/fake"))
     File.write!(Path.join(repo, "_build/dev/.compiled"), "fake")
 
@@ -113,11 +114,12 @@ defmodule Tak.E2E.WorktreeTest do
       assert File.exists?(Path.join(worktree.path, ".tak"))
       assert File.exists?(Path.join(worktree.path, "config/dev.local.exs"))
 
-      # CoW: deps and _build were copied from repo into worktree
+      # CoW: deps was copied from repo into worktree, _build was not (absolute paths)
       assert File.dir?(Path.join(worktree.path, "deps"))
       assert File.exists?(Path.join(worktree.path, "deps/fake_dep/README"))
-      assert File.dir?(Path.join(worktree.path, "_build"))
-      assert File.exists?(Path.join(worktree.path, "_build/dev/.compiled"))
+      refute File.exists?(Path.join(worktree.path, "_build/dev/.compiled"))
+      # _build may be created by `mix deps.get` but not the fake marker
+      assert File.dir?(worktree.path)
 
       # dev.local.exs contains Tak sentinel and port, but no database when create_db false
       dev_local = File.read!(Path.join(worktree.path, "config/dev.local.exs"))
@@ -170,11 +172,17 @@ defmodule Tak.E2E.WorktreeTest do
 
       assert {:ok, wt} = Tak.Worktrees.create("feature/cleanup", "armstrong", create_db: false)
       assert File.dir?(wt.path)
-      {out, 0} = System.cmd("git", ["branch", "--list", "feature/cleanup"], stderr_to_stdout: true)
+
+      {out, 0} =
+        System.cmd("git", ["branch", "--list", "feature/cleanup"], stderr_to_stdout: true)
+
       assert out =~ "feature/cleanup"
 
       assert {:ok, _} = Tak.Worktrees.remove("armstrong", force: true)
-      {out2, _} = System.cmd("git", ["branch", "--list", "feature/cleanup"], stderr_to_stdout: true)
+
+      {out2, _} =
+        System.cmd("git", ["branch", "--list", "feature/cleanup"], stderr_to_stdout: true)
+
       # removal deletes branch when not force? Actually maybe_delete_branch uses -d which
       # may fail if not merged, but we check worktree gone
       assert out2 == "" or out2 =~ "feature/cleanup"
@@ -188,8 +196,9 @@ defmodule Tak.E2E.WorktreeTest do
 
       assert {:ok, wt} = Tak.Worktrees.create("feature/no-cow", "armstrong", create_db: false)
 
-      # deps/_build from repo should NOT have been copied (worktree has fresh git checkout)
+      # deps from repo should NOT have been copied when opt-out
       refute File.exists?(Path.join(wt.path, "deps/fake_dep/README"))
+      # _build never copied even when opt-in, so also not present
       refute File.exists?(Path.join(wt.path, "_build/dev/.compiled"))
 
       # but worktree still created and deps.get still ran (created _build/deps from mix)

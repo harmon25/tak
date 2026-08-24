@@ -44,7 +44,7 @@ defmodule Tak do
     * `:trees_dir` — directory where worktrees are checked out (default: `"trees"`)
     * `:create_database` — run `mix ecto.setup` when creating a worktree
       (default: `true`); override per invocation with `--db` or `--no-db`
-    * `:copy_build_artifacts` — copy `deps` and `_build` via CoW reflink/clonefile when creating a worktree (default: `true`)
+    * `:copy_build_artifacts` — copy `deps` via CoW reflink/clonefile when creating a worktree (default: `true`; `_build` is not copied to avoid absolute-path manifests)
     * `:use_template_database` — clone the primary dev database via `CREATE DATABASE ... TEMPLATE` instead of `mix ecto.setup` (default: `false`, opt-in)
     * `:database_template` — template database name for cloning (default: `"<app>_dev"`, e.g. `my_app_dev`)
     * `:endpoint` — the Phoenix endpoint module (default: inferred from app name)
@@ -156,10 +156,11 @@ defmodule Tak do
   end
 
   @doc """
-  Returns whether `mix tak.create` should copy `deps` and `_build` via CoW.
+  Returns whether `mix tak.create` should copy `deps` via CoW.
 
-  When `true` (default), Tak attempts a reflink/clonefile copy of `deps` and `_build`
+  When `true` (default), Tak attempts a reflink/clonefile copy of `deps`
   into the new worktree before running `mix deps.get`, falling back silently on failure.
+  `_build` is not copied because its Mix manifests contain absolute source paths.
   """
   def copy_build_artifacts? do
     Application.get_env(:tak, :copy_build_artifacts, @default_copy_build_artifacts)
