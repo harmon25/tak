@@ -44,6 +44,9 @@ defmodule Tak do
     * `:trees_dir` — directory where worktrees are checked out (default: `"trees"`)
     * `:create_database` — run `mix ecto.setup` when creating a worktree
       (default: `true`); override per invocation with `--db` or `--no-db`
+    * `:copy_build_artifacts` — copy `deps` and `_build` via CoW reflink/clonefile when creating a worktree (default: `true`)
+    * `:use_template_database` — clone the primary dev database via `CREATE DATABASE ... TEMPLATE` instead of `mix ecto.setup` (default: `false`, opt-in)
+    * `:database_template` — template database name for cloning (default: `"<app>_dev"`, e.g. `my_app_dev`)
     * `:endpoint` — the Phoenix endpoint module (default: inferred from app name)
     * `:repo` — the Ecto repo module (default: inferred from app name)
 
@@ -73,6 +76,8 @@ defmodule Tak do
   @default_base_port 4000
   @default_trees_dir "trees"
   @default_create_database true
+  @default_copy_build_artifacts true
+  @default_use_template_database false
 
   @doc """
   Returns the configured endpoint module.
@@ -148,6 +153,48 @@ defmodule Tak do
   """
   def create_database? do
     Application.get_env(:tak, :create_database, @default_create_database)
+  end
+
+  @doc """
+  Returns whether `mix tak.create` should copy `deps` and `_build` via CoW.
+
+  When `true` (default), Tak attempts a reflink/clonefile copy of `deps` and `_build`
+  into the new worktree before running `mix deps.get`, falling back silently on failure.
+  """
+  def copy_build_artifacts? do
+    Application.get_env(:tak, :copy_build_artifacts, @default_copy_build_artifacts)
+  end
+
+  @doc """
+  Returns whether `mix tak.create` should clone the primary dev database via
+  `CREATE DATABASE ... TEMPLATE` when creating a database.
+
+  Opt-in; default `false`. When `true`, Tak migrates the primary DB then clones it,
+  falling back to `mix ecto.setup` on any failure.
+  """
+  def use_template_database? do
+    Application.get_env(:tak, :use_template_database, @default_use_template_database)
+  end
+
+  @doc """
+  Returns the template database name for cloning.
+
+  Defaults to `"<app>_dev"` (e.g. `my_app_dev`). Override with `config :tak, database_template: "custom_dev"`.
+  """
+  def database_template do
+    case Application.get_env(:tak, :database_template) do
+      nil -> "#{app_name()}_dev"
+      template -> template
+    end
+  end
+
+  @doc """
+  Returns the primary development database name (same as `database_template/0`).
+
+  Used as the `TEMPLATE` source when `use_template_database?()` is true.
+  """
+  def primary_database do
+    database_template()
   end
 
   @doc """

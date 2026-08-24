@@ -59,6 +59,7 @@ defmodule Tak.Worktrees do
            :ok <- copy_env_file(worktree_path),
            :ok <- write_dev_local_config(worktree.path, worktree.name, worktree.port, create_db),
            :ok <- maybe_write_mise_config(worktree.path, worktree.port),
+           :ok <- maybe_copy_build_artifacts(".", worktree.path),
            :ok <- bootstrap_worktree(worktree.path, create_db) do
         Tak.Metadata.write!(worktree)
         {:ok, worktree}
@@ -308,9 +309,147 @@ defmodule Tak.Worktrees do
   defp maybe_setup_database(_path, false), do: :ok
 
   defp maybe_setup_database(path, true) do
+    if Tak.use_template_database?() do
+      case try_template_setup(path) do
+        :ok -> :ok
+        :fallback -> run_ecto_setup(path)
+      end
+    else
+      run_ecto_setup(path)
+    end
+  end
+
+  defp run_ecto_setup(path) do
     case run_mix(path, ["ecto.setup"]) do
       {:ok, _output} -> :ok
       {:error, reason} -> {:error, reason}
+    end
+  end
+
+  defp try_template_setup(worktree_path) do
+    template = Tak.database_template()
+    worktree_name = Path.basename(worktree_path)
+    database = Tak.database_for(worktree_name)
+
+    # Best-effort: migrate primary so template is up-to-date (per user request)
+    _ = run_mix(".", ["ecto.migrate"])
+
+    # Best-effort: terminate connections to template DB
+    terminate_template_connections(template)
+
+    case clone_database(template, database) do
+      :ok ->
+        case run_mix(worktree_path, ["ecto.migrate"]) do
+          {:ok, _output} -> :ok
+          {:error, reason} -> {:error, reason}
+        end
+
+      :error ->
+        Logger.warning(
+          "Tak: template clone failed for #{database} from #{template}, falling back to mix ecto.setup"
+        )
+
+        :fallback
+    end
+  end
+
+  defp terminate_template_connections(template) do
+    sql =
+      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '#{template}' AND pid <> pg_backend_pid()"
+
+    # Try postgres db first, fall back to template itself
+    case Tak.System.cmd("psql", ["-d", "postgres", "-c", sql], stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      _ ->
+        {_, _} = Tak.System.cmd("psql", ["-d", template, "-c", sql], stderr_to_stdout: true)
+        :ok
+    end
+  end
+
+  defp clone_database(template, database) do
+    # Prefer createdb --template, fallback to psql CREATE DATABASE
+    case Tak.System.cmd("createdb", ["--template=#{template}", database], stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      {output, _} ->
+        Logger.warning("Tak: createdb template clone failed: #{output}")
+
+        case Tak.System.cmd(
+               "psql",
+               [
+                 "-d",
+                 "postgres",
+                 "-c",
+                 "CREATE DATABASE \"#{database}\" TEMPLATE \"#{template}\""
+               ], stderr_to_stdout: true) do
+          {_, 0} ->
+            :ok
+
+          {output2, _} ->
+            Logger.warning("Tak: psql template clone failed: #{output2}")
+            :error
+        end
+    end
+  end
+
+  # --- CoW build artifact copy ---
+
+  defp maybe_copy_build_artifacts(source, dest) do
+    if Tak.copy_build_artifacts?() do
+      do_copy_build_artifacts(source, dest)
+    else
+      :ok
+    end
+  end
+
+  defp do_copy_build_artifacts(source_root, dest_root) do
+    for artifact <- ["deps", "_build"] do
+      src = Path.join(source_root, artifact)
+      dest = Path.join(dest_root, artifact)
+
+      if File.dir?(src) and not File.dir?(dest) do
+        cow_copy(src, dest)
+      end
+    end
+
+    :ok
+  end
+
+  defp cow_copy(src, dest) do
+    {cmd, args} =
+      case :os.type() do
+        {:unix, :darwin} -> {"cp", ["-cR", src, dest]}
+        _ -> {"cp", ["--reflink=auto", "-a", src, dest]}
+      end
+
+    case Tak.System.cmd(cmd, args, stderr_to_stdout: true) do
+      {_, 0} ->
+        :ok
+
+      {output, _} ->
+        Logger.warning(
+          "Tak: CoW copy failed (#{Enum.join([cmd | args], " ")}): #{output}, trying fallback"
+        )
+
+        fallback_args =
+          case :os.type() do
+            {:unix, :darwin} -> ["-R", src, dest]
+            _ -> ["-a", src, dest]
+          end
+
+        case Tak.System.cmd("cp", fallback_args, stderr_to_stdout: true) do
+          {_, 0} ->
+            :ok
+
+          {output2, _} ->
+            Logger.warning("Tak: fallback copy also failed: #{output2}")
+            # Clean up partial
+            File.rm_rf(dest)
+            :ok
+        end
     end
   end
 
