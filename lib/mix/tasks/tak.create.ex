@@ -24,6 +24,7 @@ defmodule Mix.Tasks.Tak.Create do
 
     * `--db` — create the database, overriding the `create_database` config value
     * `--no-db` — skip database creation, overriding the `create_database` config value
+    * `--profile` — print per-stage timing breakdown (also enabled via `TAK_PROFILE=1`)
 
   ## Examples
 
@@ -38,7 +39,8 @@ defmodule Mix.Tasks.Tak.Create do
 
   @impl Mix.Task
   def run(args) do
-    {opts, positional, _} = OptionParser.parse(args, switches: [db: :boolean])
+    {opts, positional, _} =
+      OptionParser.parse(args, switches: [db: :boolean, profile: :boolean])
 
     create_db =
       case opts[:db] do
@@ -62,7 +64,9 @@ defmodule Mix.Tasks.Tak.Create do
           Mix.shell().info("Creating worktree for branch '#{branch}'...")
         end
 
-        case Tak.Worktrees.create(branch, name, create_db: create_db) do
+        create_opts = [create_db: create_db, profile: opts[:profile] || false]
+
+        case Tak.Worktrees.create(branch, name, create_opts) do
           {:ok, worktree} ->
             render_success(worktree)
 

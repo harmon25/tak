@@ -35,6 +35,14 @@ defmodule Tak.Worktrees do
     * `:create_db` - whether to create the database (default: from config)
   """
   def create(branch, name, opts \\ []) do
+    if Tak.Profiling.enabled?(opts) do
+      do_create_profiled(branch, name, opts)
+    else
+      do_create(branch, name, opts)
+    end
+  end
+
+  defp do_create(branch, name, opts) do
     create_db = Keyword.get(opts, :create_db, Tak.create_database?())
 
     with {:ok, name} <- resolve_name(name),
@@ -69,6 +77,152 @@ defmodule Tak.Worktrees do
         {:error, {:bootstrap_failed, _command, _output} = reason} ->
           {:error, cleanup_after_bootstrap_failure(worktree, branch_exists?, reason)}
       end
+    end
+  end
+
+  defp do_create_profiled(branch, name, opts) do
+    create_db = Keyword.get(opts, :create_db, Tak.create_database?())
+    prof = Tak.Profiling.start()
+
+    {resolve_result, prof} =
+      Tak.Profiling.measure(prof, "resolve_name", fn -> resolve_name(name) end)
+
+    case resolve_result do
+      {:error, _} = err ->
+        {timings, total} = Tak.Profiling.finish(prof)
+        Tak.Profiling.report(timings, total)
+        err
+
+      {:ok, resolved_name} ->
+        {validate_result, prof} =
+          Tak.Profiling.measure(prof, "validate_not_exists", fn ->
+            validate_not_exists(resolved_name)
+          end)
+
+        case validate_result do
+          {:error, _} = err ->
+            {timings, total} = Tak.Profiling.finish(prof)
+            Tak.Profiling.report(timings, total)
+            err
+
+          :ok ->
+            {branch_exists?, prof} =
+              Tak.Profiling.measure(prof, "branch_exists?", fn ->
+                {Tak.Git.branch_exists?(branch), nil}
+              end)
+              |> then(fn {{val, _}, p} -> {val, p} end)
+
+            trees_dir = Tak.trees_dir()
+            worktree_path = Path.join(trees_dir, resolved_name)
+
+            worktree = %Tak.Worktree{
+              name: resolved_name,
+              branch: branch,
+              port: Tak.port_for(resolved_name),
+              path: worktree_path,
+              database: if(create_db, do: Tak.database_for(resolved_name)),
+              database_managed?: create_db
+            }
+
+            {_port_check, prof} =
+              Tak.Profiling.measure(prof, "port_check", fn ->
+                maybe_warn_port_in_use(worktree.port)
+              end)
+
+            {_mkdir, prof} =
+              Tak.Profiling.measure(prof, "mkdir_trees", fn ->
+                File.mkdir_p!(trees_dir)
+              end)
+
+            {git_result, prof} =
+              Tak.Profiling.measure(prof, "git worktree add", fn ->
+                add_git_worktree(branch, worktree_path, branch_exists?)
+              end)
+
+            case git_result do
+              {:error, {:git_failed, _, _} = reason} ->
+                {timings, total} = Tak.Profiling.finish(prof)
+                Tak.Profiling.report(timings, total)
+                {:error, reason}
+
+              {:ok, _output} ->
+                {_copy, prof} =
+                  Tak.Profiling.measure(prof, "copy_env", fn ->
+                    copy_env_file(worktree_path)
+                  end)
+
+                {cfg_result, prof} =
+                  Tak.Profiling.measure(prof, "write_dev_local", fn ->
+                    write_dev_local_config(
+                      worktree.path,
+                      worktree.name,
+                      worktree.port,
+                      create_db
+                    )
+                  end)
+
+                case cfg_result do
+                  {:error, _} = err ->
+                    {timings, total} = Tak.Profiling.finish(prof)
+                    Tak.Profiling.report(timings, total)
+                    err
+
+                  :ok ->
+                    {mise_result, prof} =
+                      Tak.Profiling.measure(prof, "mise_config", fn ->
+                        maybe_write_mise_config(worktree.path, worktree.port)
+                      end)
+
+                    case mise_result do
+                      {:error, _} = err ->
+                        {timings, total} = Tak.Profiling.finish(prof)
+                        Tak.Profiling.report(timings, total)
+                        err
+
+                      :ok ->
+                        {deps_result, prof} =
+                          Tak.Profiling.measure(prof, "deps.get", fn ->
+                            run_mix(worktree.path, ["deps.get"])
+                          end)
+
+                        {bootstrap_outcome, prof} =
+                          case deps_result do
+                            {:error, _} = err ->
+                              {err, prof}
+
+                            {:ok, _} ->
+                              if create_db do
+                                Tak.Profiling.measure(prof, "ecto.setup", fn ->
+                                  maybe_setup_database(worktree.path, true)
+                                end)
+                              else
+                                {:ok, prof}
+                              end
+                          end
+
+                        case bootstrap_outcome do
+                          :ok ->
+                            {_meta, prof} =
+                              Tak.Profiling.measure(prof, "metadata_write", fn ->
+                                Tak.Metadata.write!(worktree)
+                              end)
+
+                            {timings, total} = Tak.Profiling.finish(prof)
+                            Tak.Profiling.report(timings, total)
+                            {:ok, worktree}
+
+                          {:error, {:bootstrap_failed, _, _} = reason} ->
+                            cleanup =
+                              cleanup_after_bootstrap_failure(worktree, branch_exists?, reason)
+
+                            {timings, total} = Tak.Profiling.finish(prof)
+                            Tak.Profiling.report(timings, total)
+                            {:error, cleanup}
+                        end
+                    end
+                end
+            end
+        end
     end
   end
 
