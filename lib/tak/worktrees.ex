@@ -33,6 +33,7 @@ defmodule Tak.Worktrees do
   ## Options
 
     * `:create_db` - whether to create the database (default: from config)
+    * `:copy_deps` - whether to copy `deps/` from parent instead of `mix deps.get` (default: from config)
   """
   def create(branch, name, opts \\ []) do
     if Tak.Profiling.enabled?(opts) do
@@ -67,7 +68,7 @@ defmodule Tak.Worktrees do
            :ok <- copy_env_file(worktree_path),
            :ok <- write_dev_local_config(worktree.path, worktree.name, worktree.port, create_db),
            :ok <- maybe_write_mise_config(worktree.path, worktree.port),
-           :ok <- bootstrap_worktree(worktree.path, create_db) do
+           :ok <- bootstrap_worktree(worktree.path, create_db, opts) do
         Tak.Metadata.write!(worktree)
         {:ok, worktree}
       else
@@ -180,9 +181,14 @@ defmodule Tak.Worktrees do
                         err
 
                       :ok ->
+                        {_copy, prof} =
+                          Tak.Profiling.measure(prof, "copy_deps", fn ->
+                            maybe_copy_deps(worktree.path, opts)
+                          end)
+
                         {deps_result, prof} =
                           Tak.Profiling.measure(prof, "deps.get", fn ->
-                            run_mix(worktree.path, ["deps.get"])
+                            maybe_run_deps_get(worktree.path, opts)
                           end)
 
                         {bootstrap_outcome, prof} =
@@ -452,11 +458,66 @@ defmodule Tak.Worktrees do
     :ok
   end
 
-  defp bootstrap_worktree(path, create_db) do
-    with {:ok, _output} <- run_mix(path, ["deps.get"]),
+  defp bootstrap_worktree(path, create_db, opts \\ []) do
+    with :ok <- maybe_copy_deps(path, opts),
+         {:ok, _output} <- maybe_run_deps_get(path, opts),
          :ok <- maybe_setup_database(path, create_db) do
       :ok
     end
+  end
+
+  defp maybe_copy_deps(path, opts) do
+    copy? = Keyword.get(opts, :copy_deps, Tak.copy_deps?())
+
+    if not copy? or not File.dir?("deps") do
+      :ok
+    else
+      dest = Path.join(path, "deps")
+
+      # Remove stale dest to ensure fresh copy (git worktree is fresh)
+      File.rm_rf(dest)
+
+      result =
+        case File.cp_r("deps", dest) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason, file} ->
+            Logger.warning(
+              "Tak copy deps failed #{file}: #{inspect(reason)}, falling back to deps.get"
+            )
+
+            :ok
+        end
+
+      # Also copy mix.lock if parent has it but worktree doesn't (e.g. synthetic demo where lock not yet committed)
+      parent_lock = "mix.lock"
+      worktree_lock = Path.join(path, "mix.lock")
+
+      if File.exists?(parent_lock) and not File.exists?(worktree_lock) do
+        File.cp(parent_lock, worktree_lock)
+      end
+
+      result
+    end
+  end
+
+  defp maybe_run_deps_get(path, opts) do
+    copy? = Keyword.get(opts, :copy_deps, Tak.copy_deps?())
+
+    if copy? and File.dir?(Path.join(path, "deps")) and deps_in_sync?(path) do
+      {:ok, ""}
+    else
+      run_mix(path, ["deps.get"])
+    end
+  end
+
+  defp deps_in_sync?(worktree_path) do
+    parent_lock = "mix.lock"
+    worktree_lock = Path.join(worktree_path, "mix.lock")
+
+    File.exists?(parent_lock) and File.exists?(worktree_lock) and
+      File.read!(parent_lock) == File.read!(worktree_lock)
   end
 
   defp maybe_setup_database(_path, false), do: :ok

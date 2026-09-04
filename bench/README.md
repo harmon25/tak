@@ -22,13 +22,16 @@ TAK_PROFILE=1 mix tak.create feature/foo --no-db
 #   copy_env                    4ms  (0.2%)
 #   write_dev_local            14ms  (0.7%)
 #   mise_config                11ms  (0.5%)
-#   deps.get                 1961ms  (95.3%)
+#   copy_deps                  48ms  (47.5%)   # when --copy-deps (default)
+#   deps.get                    0ms  (0.0%)   # skipped when copy in sync
 #   metadata_write              5ms  (0.2%)
 ```
 
 When neither `--profile` nor `TAK_PROFILE=1` is set, there is **zero overhead** (no timing calls).
 
-Implementation: `lib/tak/profiling.ex:1`, `lib/tak/worktrees.ex:37`, `lib/mix/tasks/tak.create.ex:41`.
+Implementation: `lib/tak/profiling.ex:1`, `lib/tak/worktrees.ex:37`, `lib/mix/tasks/tak.create.ex:41` (adds `--copy-deps`/`--no-copy-deps`, `config :tak, copy_deps`).
+
+Copy optimization: `File.cp_r("deps", "trees/<name>/deps")` (~48ms small, ~469ms large 92M) + skip `deps.get` when `mix.lock` identical. Disable with `--no-copy-deps` for A/B testing.
 
 ## 2. Generating a realistic Phoenix demo
 
@@ -69,21 +72,25 @@ hyperfine --warmup 1 \
 
 ## 4. Interpreting results
 
-On the tak repo itself (tiny project, no LiveViews):
+Before optimization ( `perf/profiling+fix` , `bench/BENCHMARK.md` ):
 
 ```
-deps.get  ~95%  (1.3-2.1s)
-git worktree add ~2-4% (40-80ms)
-mise_config ~0.5%
-everything else <1%
+small (tak): deps.get 92-96% (2.6-3.1s), git 1-4%, mise 0.5%
+large demo:  deps.get 99.5% (20-23s cold, warm 2s), git 0.3%
 ```
 
-Hypothesis for Phoenix demo: `deps.get` and `ecto.setup` will dominate even more due to compilation of large LiveViews and migration runs. The breakdown makes it obvious whether to optimize:
+After `copy_deps` ( `perf/copy-deps` , default enabled):
 
-- `deps.get` heavy → consider symlinking `deps`/`_build`, or `mix deps.get --check-locked`, or skipping when lock unchanged.
-- `ecto.setup` heavy → consider splitting `ecto.create`/`migrate`, skipping seeds, or async.
-- `git worktree add` heavy → check git hooks/LFS.
-- `mise_config` heavy → make `mise trust` async/best-effort.
+```
+small: copy_deps 48-85ms (47-61%) + deps.get 0ms (skipped) → total 101-138ms vs 976ms/3.2s without copy (6-10×)
+large 92M deps: copy_deps 469-610ms (92-93%) + deps.get 0ms → total 509-586ms vs 6.5s/20s without copy (11-13×)
+```
+
+Next:
+
+- `copy_deps` now default; test via `TAK_PROFILE=1 mix tak.create bench/x armstrong --no-db` (default) vs `... --no-copy-deps` / `--copy-deps`
+- `ecto.setup` not yet optimized (still measured as `ecto.setup` row when `--db`)
+- Further win could be copying `_build` but risky (absolute paths/NIFs)
 
 ## 5. Test coverage
 
