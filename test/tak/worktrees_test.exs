@@ -38,12 +38,14 @@ defmodule Tak.WorktreesTest do
       trees_dir: Application.get_env(:tak, :trees_dir),
       names: Application.get_env(:tak, :names),
       base_port: Application.get_env(:tak, :base_port),
-      system_mod: Application.get_env(:tak, :system_mod)
+      system_mod: Application.get_env(:tak, :system_mod),
+      copy_deps: Application.get_env(:tak, :copy_deps)
     }
 
     Application.put_env(:tak, :trees_dir, trees_dir)
     Application.put_env(:tak, :names, ["armstrong", "hickey"])
     Application.put_env(:tak, :base_port, 4000)
+    Application.put_env(:tak, :copy_deps, false)
 
     on_exit(fn ->
       File.rm_rf!(tmp_dir)
