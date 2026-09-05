@@ -59,18 +59,38 @@ Default repeat: total 586ms  copy 546ms (93.2%)  deps 0ms
 
 Demo generated via `bench/generate_demo.exs` (wired :tak path, committed `mix.lock`). Large is ~6-7x small before, now both sub-second with copy. `git worktree add` 23-58ms, `mise` 6-15ms are now the long poles.
 
+## 3-way comparison (2026-09-05, `bench/compare_three.sh` ITER=3, `TAK_PROFILE=1`)
+
+Fresh run on `perf/copy-build` `4231c30` (small 5.9M `_build`, large 16M `_build`, 92M deps):
+
+**Small `tak`:**
+```
+original --no-copy-* : 1462ms (deps 1281ms) / 1096ms (1033ms) / 1100ms (1043ms)  avg ~1219ms
+copy_deps (default)   : 115ms (copy 55ms) / 150ms (90ms) / 113ms (55ms) + default 131/112/155ms  avg ~129ms
+copy_build opt-in     : 181ms (copy 57+61ms) / 185ms (60+59ms) / 243ms (49+134ms)  avg ~203ms
+```
+**Large demo:**
+```
+original --no-copy-* : 7304ms (deps 7258ms) / 9408ms (9342ms) / 8376ms (8305ms)  avg ~8362ms
+copy_deps (default)   : 1348ms (1282ms) / 1354ms (1291ms) / 1109ms (1034ms)  avg ~1270ms; default 711/625/791ms avg ~709ms
+copy_build opt-in     : 1037ms (727+268ms) / 1012ms (595+373ms) / 928ms (539+342ms)  avg ~992ms
+first mix compile after worktree: all ~0.7-0.8s (no clear win for _build copy on --no-db)
+```
+
+Interpretation: `copy_deps` gives **8-10× small (1219→129ms) / 6-12× large (8362→709ms)**; `copy_build` adds ~60ms small / ~250ms large on top of `copy_deps` and is **not faster for `--no-db`** (extra copy cost), but being **opt-in** it doesn't penalize default and can help first `mix compile` when `--db` triggers full compile (not measured here). Hence `copy_build` as opt-in is the right tradeoff.
+
 ## Interpretation
 
 - Before: cold `_build` per worktree → `mix deps.get` recompiles deps + app (20s large, 3s small)
-- After: `File.cp_r("deps", "trees/<name>/deps")` ~48-85ms small, ~469-610ms large (92M) + skip `deps.get` when `mix.lock` identical → total 100-586ms
+- After: `File.cp_r("deps", "trees/<name>/deps")` ~48-90ms small, ~469-1282ms large (92M) + skip `deps.get` when `mix.lock` identical → total 101-586ms (copy_deps); `copy_build` adds ~60ms small / ~250ms large but keeps total <1s
 - Fallback: if `deps/` missing or `mix.lock` mismatch, runs `deps.get` normally; `mix.lock` also copied if untracked (synthetic demo)
 - Also copies `mix.lock` if worktree missing it, so synthetic demo works without committed lock
 
 ## Next
 
-- `--db` variant (ecto.setup) still needs profiling; copy_build shows that `_build` copy saves first `mix compile` (~200ms vs 3s) but `tak.create --no-db` already benefits most from `copy_deps`
+- `--db` variant (ecto.setup) still needs profiling; copy_build shows that `_build` copy saves first `mix compile` (~200ms vs 3s) but `tak.create --no-db` already benefits most from `copy_deps` — as confirmed by 3-way above where `copy_build` is ~1.4× slower than `copy_deps` for --no-db
 - Copy_build rewrites only text artefacts (`.app`, `.mix/*`, `compile.*`, `consolidated/*`), skips `.beam` `debug_info` (contains absolute `file`), and `File.touch` resets mtimes to avoid future warning; fallback to compile if rewrite fails
 - Consider `cp --reflink=auto` for faster COW on supported FS
 
-See also `bench/README.md`, `bench/profile_demo.exs`, `lib/tak/profiling.ex`, `lib/tak/worktrees.ex:maybe_copy_*`.
+See also `bench/README.md`, `bench/profile_demo.exs`, `bench/compare_three.sh`, `lib/tak/profiling.ex`, `lib/tak/worktrees.ex:maybe_copy_*`.
 
