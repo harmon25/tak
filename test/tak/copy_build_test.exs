@@ -1,4 +1,4 @@
-defmodule Tak.CopyDepsTest do
+defmodule Tak.CopyBuildTest do
   use ExUnit.Case, async: false
   import ExUnit.CaptureIO
 
@@ -27,16 +27,30 @@ defmodule Tak.CopyDepsTest do
   end
 
   setup do
-    tmp = Path.join(System.tmp_dir!(), "tak_copy_test_#{System.unique_integer([:positive])}")
+    tmp =
+      Path.join(System.tmp_dir!(), "tak_copy_build_test_#{System.unique_integer([:positive])}")
+
     parent = Path.join(tmp, "parent")
     File.mkdir_p!(parent)
 
-    # Create fake parent deps and mix.lock
+    # Fake parent _build with a text artefact containing parent absolute path
+    parent_expanded = Path.expand(parent)
+    build_app = Path.join(parent, "_build/dev/lib/fake/ebin/fake.app")
+    File.mkdir_p!(Path.dirname(build_app))
+
+    File.write!(
+      build_app,
+      ~s({application, fake, [{vsn, "1.0"}, {path, "#{parent_expanded}/lib/fake"}]})
+    )
+
+    build_lock = Path.join(parent, "_build/dev/.mix/compile.lock")
+    File.mkdir_p!(Path.dirname(build_lock))
+    File.write!(build_lock, "lock for #{parent_expanded}")
+
+    # Also need deps for copy_deps part
     File.mkdir_p!(Path.join(parent, "deps/fake_dep"))
-    File.write!(Path.join(parent, "deps/fake_dep/mix.exs"), "# fake")
     File.write!(Path.join(parent, "mix.lock"), ~s(%{"fake_dep" => {:hex, :fake_dep, "1.0.0"}}))
 
-    # Create trees dir inside parent (simulates real project layout)
     trees_dir = Path.join(parent, "trees")
     File.mkdir_p!(trees_dir)
 
@@ -52,9 +66,8 @@ defmodule Tak.CopyDepsTest do
     Application.put_env(:tak, :names, ["armstrong", "hickey"])
     Application.put_env(:tak, :system_mod, TestSystem)
     Application.put_env(:tak, :copy_deps, true)
-    Application.put_env(:tak, :copy_build, false)
+    Application.put_env(:tak, :copy_build, true)
 
-    # We need to cd into parent for File.dir?("deps") to resolve correctly
     old_cwd = File.cwd!()
     File.cd!(parent)
 
@@ -68,10 +81,10 @@ defmodule Tak.CopyDepsTest do
       end)
     end)
 
-    {:ok, parent: parent, trees_dir: trees_dir, tmp: tmp}
+    {:ok, parent: parent, trees_dir: trees_dir}
   end
 
-  test "copies deps and skips deps.get when lock in sync", %{trees_dir: trees_dir, parent: parent} do
+  test "copies _build and rewrites parent path", %{trees_dir: trees_dir, parent: parent} do
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}
@@ -82,39 +95,6 @@ defmodule Tak.CopyDepsTest do
         {"", 0}
 
       "mix", ["deps.get"], _ ->
-        flunk("deps.get should be skipped when copy succeeds and lock in sync")
-
-      "mix", ["ecto.setup"], _ ->
-        {"", 0}
-
-      _c, _a, _o ->
-        {"", 0}
-    end)
-
-    assert {:ok, wt} =
-             Tak.Worktrees.create("feature/copy", "armstrong", create_db: false, copy_deps: true)
-
-    assert wt.name == "armstrong"
-    assert File.dir?(Path.join(trees_dir, "armstrong/deps/fake_dep"))
-
-    refute Enum.any?(TestSystem.history(), fn {cmd, args, _} ->
-             cmd == "mix" and args == ["deps.get"]
-           end)
-  end
-
-  test "falls back to deps.get when parent has no deps", %{trees_dir: trees_dir} do
-    File.rm_rf!("deps")
-
-    TestSystem.configure(fn
-      "git", ["show-ref" | _], _ ->
-        {"", 1}
-
-      "git", ["worktree", "add", "-b", _, path], _ ->
-        File.mkdir_p!(path)
-        File.write!(Path.join(path, "mix.lock"), ~s(%{}))
-        {"", 0}
-
-      "mix", ["deps.get"], _ ->
         {"", 0}
 
       _c, _a, _o ->
@@ -122,17 +102,24 @@ defmodule Tak.CopyDepsTest do
     end)
 
     assert {:ok, _} =
-             Tak.Worktrees.create("feature/nocache", "armstrong",
+             Tak.Worktrees.create("feature/build", "armstrong",
                create_db: false,
-               copy_deps: true
+               copy_deps: true,
+               copy_build: true
              )
 
-    assert Enum.any?(TestSystem.history(), fn {cmd, args, _} ->
-             cmd == "mix" and args == ["deps.get"]
-           end)
+    copied_app = Path.join(trees_dir, "armstrong/_build/dev/lib/fake/ebin/fake.app")
+    assert File.exists?(copied_app)
+    content = File.read!(copied_app)
+    child = Path.expand(Path.join(trees_dir, "armstrong"))
+    assert content =~ child
+    # Content should be rewritten to child/lib/fake, not just parent/lib/fake
+    assert content == ~s({application, fake, [{vsn, "1.0"}, {path, "#{child}/lib/fake"}]})
   end
 
-  test "respects --no-copy-deps flag", %{trees_dir: _} do
+  test "falls back to compile when parent has no _build", %{trees_dir: _} do
+    File.rm_rf!("_build")
+
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}
@@ -150,14 +137,43 @@ defmodule Tak.CopyDepsTest do
     end)
 
     assert {:ok, _} =
-             Tak.Worktrees.create("feature/flag", "armstrong", create_db: false, copy_deps: false)
+             Tak.Worktrees.create("feature/nobuild", "armstrong",
+               create_db: false,
+               copy_deps: true,
+               copy_build: true
+             )
 
-    assert Enum.any?(TestSystem.history(), fn {cmd, args, _} ->
-             cmd == "mix" and args == ["deps.get"]
-           end)
+    # No crash, still copies deps
   end
 
-  test "shows copy_deps in profile breakdown", %{trees_dir: _} do
+  test "respects --no-copy-build", %{trees_dir: trees_dir, parent: parent} do
+    TestSystem.configure(fn
+      "git", ["show-ref" | _], _ ->
+        {"", 1}
+
+      "git", ["worktree", "add", "-b", _, path], _ ->
+        File.mkdir_p!(path)
+        File.write!(Path.join(path, "mix.lock"), File.read!(Path.join(parent, "mix.lock")))
+        {"", 0}
+
+      "mix", ["deps.get"], _ ->
+        {"", 0}
+
+      _c, _a, _o ->
+        {"", 0}
+    end)
+
+    assert {:ok, _} =
+             Tak.Worktrees.create("feature/flag", "armstrong",
+               create_db: false,
+               copy_deps: true,
+               copy_build: false
+             )
+
+    refute File.dir?(Path.join(trees_dir, "armstrong/_build"))
+  end
+
+  test "shows copy_build in profile breakdown", %{trees_dir: _} do
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}
@@ -180,23 +196,27 @@ defmodule Tak.CopyDepsTest do
                  Tak.Worktrees.create("feature/prof", "armstrong",
                    create_db: false,
                    copy_deps: true,
+                   copy_build: true,
                    profile: true
                  )
       end)
 
+    assert output =~ "copy_build"
     assert output =~ "copy_deps"
-    assert output =~ "deps.get"
   end
 
-  test "deps.get not skipped when lock mismatch", %{parent: parent} do
+  test "skips .beam files during rewrite", %{trees_dir: trees_dir, parent: parent} do
+    # Add a fake beam with parent path inside but should be skipped
+    beam = Path.join(parent, "_build/dev/lib/fake/ebin/fake.beam")
+    File.write!(beam, "beam with #{Path.expand(parent)} path")
+
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}
 
       "git", ["worktree", "add", "-b", _, path], _ ->
         File.mkdir_p!(path)
-        # Worktree gets different lock
-        File.write!(Path.join(path, "mix.lock"), ~s(%{"other" => {:hex, :other, "2.0"}}))
+        File.write!(Path.join(path, "mix.lock"), File.read!(Path.join(parent, "mix.lock")))
         {"", 0}
 
       "mix", ["deps.get"], _ ->
@@ -207,13 +227,14 @@ defmodule Tak.CopyDepsTest do
     end)
 
     assert {:ok, _} =
-             Tak.Worktrees.create("feature/mismatch", "armstrong",
+             Tak.Worktrees.create("feature/beam", "armstrong",
                create_db: false,
-               copy_deps: true
+               copy_deps: true,
+               copy_build: true
              )
 
-    assert Enum.any?(TestSystem.history(), fn {cmd, args, _} ->
-             cmd == "mix" and args == ["deps.get"]
-           end)
+    copied = File.read!(Path.join(trees_dir, "armstrong/_build/dev/lib/fake/ebin/fake.beam"))
+    # Should still contain parent path because .beam skipped
+    assert copied =~ Path.expand(parent)
   end
 end

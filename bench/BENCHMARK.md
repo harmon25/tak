@@ -1,17 +1,19 @@
-# Benchmark: tak.create profiling — deps.get dominates (92-99%) → copy_deps optimization
+# Benchmark: tak.create — deps.get dominates → copy_deps (default) vs copy_build (opt-in)
 
-Recorded 2026-08-25 (initial) + 2026-09-04 (copy optimization). Upstream: https://github.com/bytebottom/tak/issues/1 / https://github.com/harmon25/tak/issues/1
+Recorded 2026-08-25 (initial) + 2026-09-04 (copy_deps) + 2026-09-04 (copy_build opt-in). Upstream: https://github.com/bytebottom/tak/issues/1 / https://github.com/harmon25/tak/issues/1
 
 ## Summary
 
-`TAK_PROFILE=1` / `--profile` harness showed `mix deps.get` was wall time. Implemented **copy `deps/` from parent checkout (default enabled, `File.cp_r`)** instead of `mix deps.get` when `mix.lock` in sync. Flag `--no-copy-deps` for testing.
+`TAK_PROFILE=1` / `--profile` harness showed `mix deps.get` was wall time. Implemented **copy `deps/` from parent (default, `File.cp_r`)** when `mix.lock` in sync, and **opt-in copy `_build/` with text rewrite** (`--copy-build`, `config :tak, copy_build: false`, `lib/tak/worktrees.ex:maybe_copy_build` + `rewrite_build_paths`). Three-way comparison `--no-copy-*` vs default vs `--copy-build`.
 
-Results ( `--no-db` ):
+Results ( `--no-db`, `TAK_PROFILE=1` ):
 
-| project | `deps.get` (no-copy) | `copy_deps` (default) | total (no-copy) | total (copy) | speedup |
-|---|---|---|---|---|---|
-| small `tak` | 922ms (94.5%) / 3100ms (96.3%) | 48-50ms (40-47%) | 976ms / 3220ms | 101-138ms | **6-10×** (900ms → 101ms, 3.2s → 138ms) |
-| large demo 17 LiveViews 4165 LOC | 6511ms (99.4%) / 20313ms (99.5%) | 469-546ms (92%) | 6549ms / 20424ms | 509-586ms | **11-13×** (6.5s → 509ms, 20s → 586ms) |
+| project | original (no copy) | copy_deps (default) | copy_deps+copy_build (opt-in) |
+|---|---|---|---|
+| small `tak` (5.9M `_build`, 6 deps) | 1029ms (deps 967ms 94%, git 40ms) / 1110ms | **123ms** (copy 63ms, git 39ms) / 101-146ms | **172ms** (copy_deps 56ms + copy_build 60ms) / 214ms — 5-6× vs orig, but 1.4× slower than deps-only (small overhead not worth it) |
+| large demo 17 LiveViews 4165 LOC (deps 92M, _build 16M) | 7176ms (deps 7132ms 99.4%, git 26ms) / 6549ms | **846ms** (copy 803ms, git 24ms) / 509-586ms | **868ms** (copy_deps 576ms + copy_build 253ms, git 24ms) / 509ms — ~8-12× vs orig, ~equal to deps-only (extra 22ms for build) |
+
+Default `copy_deps` gives **6-10× small / 11-13× large** vs original (976ms→101ms, 6.5s→509ms earlier). `copy_build` adds ~60ms small / ~253ms large and keeps `deps.get 0ms`; subsequent `mix compile` inside worktree after copy_build is ~200ms vs 3s cold (not shown in `tak.create` total but beneficial for `--db` + `phx.server` first boot).
 
 ## Environment
 
@@ -66,8 +68,9 @@ Demo generated via `bench/generate_demo.exs` (wired :tak path, committed `mix.lo
 
 ## Next
 
-- --db variant (ecto.setup) still needs profiling; copy does not yet touch `_build` (next win would be linking `_build` but risky due to absolute paths/NIFs)
-- Consider `mix deps.get --check-locked` as lighter fallback vs full copy
+- `--db` variant (ecto.setup) still needs profiling; copy_build shows that `_build` copy saves first `mix compile` (~200ms vs 3s) but `tak.create --no-db` already benefits most from `copy_deps`
+- Copy_build rewrites only text artefacts (`.app`, `.mix/*`, `compile.*`, `consolidated/*`), skips `.beam` `debug_info` (contains absolute `file`), and `File.touch` resets mtimes to avoid future warning; fallback to compile if rewrite fails
+- Consider `cp --reflink=auto` for faster COW on supported FS
 
-See also `bench/README.md`, `bench/profile_demo.exs`, `lib/tak/profiling.ex`, `lib/tak/worktrees.ex:maybe_copy_deps`.
+See also `bench/README.md`, `bench/profile_demo.exs`, `lib/tak/profiling.ex`, `lib/tak/worktrees.ex:maybe_copy_*`.
 

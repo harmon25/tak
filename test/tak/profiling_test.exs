@@ -35,7 +35,8 @@ defmodule Tak.ProfilingTest do
       names: Application.get_env(:tak, :names),
       system_mod: Application.get_env(:tak, :system_mod),
       profile: Application.get_env(:tak, :profile),
-      copy_deps: Application.get_env(:tak, :copy_deps)
+      copy_deps: Application.get_env(:tak, :copy_deps),
+      copy_build: Application.get_env(:tak, :copy_build)
     }
 
     trees_dir = Path.join(tmp, "trees")
@@ -44,6 +45,7 @@ defmodule Tak.ProfilingTest do
     Application.put_env(:tak, :names, ["armstrong", "hickey"])
     Application.put_env(:tak, :system_mod, TestSystem)
     Application.put_env(:tak, :copy_deps, false)
+    Application.put_env(:tak, :copy_build, false)
     Application.delete_env(:tak, :profile)
     System.delete_env("TAK_PROFILE")
 

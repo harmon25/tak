@@ -25,6 +25,7 @@ defmodule Mix.Tasks.Tak.Create do
     * `--db` — create the database, overriding the `create_database` config value
     * `--no-db` — skip database creation, overriding the `create_database` config value
     * `--copy-deps` / `--no-copy-deps` — copy `deps/` from parent instead of `mix deps.get` (default: enabled)
+    * `--copy-build` / `--no-copy-build` — copy `_build/` from parent and rewrite paths (default: disabled, opt-in)
     * `--profile` — print per-stage timing breakdown (also enabled via `TAK_PROFILE=1`)
 
   ## Examples
@@ -41,7 +42,9 @@ defmodule Mix.Tasks.Tak.Create do
   @impl Mix.Task
   def run(args) do
     {opts, positional, _} =
-      OptionParser.parse(args, switches: [db: :boolean, profile: :boolean, copy_deps: :boolean])
+      OptionParser.parse(args,
+        switches: [db: :boolean, profile: :boolean, copy_deps: :boolean, copy_build: :boolean]
+      )
 
     create_db =
       case opts[:db] do
@@ -52,6 +55,12 @@ defmodule Mix.Tasks.Tak.Create do
     copy_deps =
       case opts[:copy_deps] do
         nil -> Tak.copy_deps?()
+        value -> value
+      end
+
+    copy_build =
+      case opts[:copy_build] do
+        nil -> Tak.copy_build?()
         value -> value
       end
 
@@ -74,7 +83,8 @@ defmodule Mix.Tasks.Tak.Create do
         create_opts = [
           create_db: create_db,
           profile: opts[:profile] || false,
-          copy_deps: copy_deps
+          copy_deps: copy_deps,
+          copy_build: copy_build
         ]
 
         case Tak.Worktrees.create(branch, name, create_opts) do

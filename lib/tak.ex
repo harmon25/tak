@@ -46,6 +46,8 @@ defmodule Tak do
       (default: `true`); override per invocation with `--db` or `--no-db`
     * `:copy_deps` — copy `deps/` from the parent checkout when possible
       (default: `true`); override per invocation with `--copy-deps` or `--no-copy-deps`
+    * `:copy_build` — copy `_build/` from the parent and rewrite absolute paths
+      (default: `false`, opt-in); override with `--copy-build` or `--no-copy-build`
     * `:endpoint` — the Phoenix endpoint module (default: inferred from app name)
     * `:repo` — the Ecto repo module (default: inferred from app name)
 
@@ -76,6 +78,7 @@ defmodule Tak do
   @default_trees_dir "trees"
   @default_create_database true
   @default_copy_deps true
+  @default_copy_build false
 
   @doc """
   Returns the configured endpoint module.
@@ -167,6 +170,21 @@ defmodule Tak do
   """
   def copy_deps? do
     Application.get_env(:tak, :copy_deps, @default_copy_deps)
+  end
+
+  @doc """
+  Returns whether `mix tak.create` should copy `_build/` from the parent
+  checkout (opt-in) and rewrite absolute parent paths to the worktree path.
+
+  When enabled, `deps/` is also copied. Disable with `--no-copy-build`.
+
+  ## Example
+
+      iex> is_boolean(Tak.copy_build?())
+      false
+  """
+  def copy_build? do
+    Application.get_env(:tak, :copy_build, @default_copy_build)
   end
 
   @doc """

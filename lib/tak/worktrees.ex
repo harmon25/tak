@@ -186,6 +186,11 @@ defmodule Tak.Worktrees do
                             maybe_copy_deps(worktree.path, opts)
                           end)
 
+                        {_bcopy, prof} =
+                          Tak.Profiling.measure(prof, "copy_build", fn ->
+                            maybe_copy_build(worktree.path, opts)
+                          end)
+
                         {deps_result, prof} =
                           Tak.Profiling.measure(prof, "deps.get", fn ->
                             maybe_run_deps_get(worktree.path, opts)
@@ -460,6 +465,7 @@ defmodule Tak.Worktrees do
 
   defp bootstrap_worktree(path, create_db, opts \\ []) do
     with :ok <- maybe_copy_deps(path, opts),
+         :ok <- maybe_copy_build(path, opts),
          {:ok, _output} <- maybe_run_deps_get(path, opts),
          :ok <- maybe_setup_database(path, create_db) do
       :ok
@@ -500,6 +506,73 @@ defmodule Tak.Worktrees do
 
       result
     end
+  end
+
+  defp maybe_copy_build(path, opts) do
+    copy? = Keyword.get(opts, :copy_build, Tak.copy_build?())
+
+    if not copy? or not File.dir?("_build") do
+      :ok
+    else
+      dest = Path.join(path, "_build")
+      File.rm_rf(dest)
+
+      result =
+        case File.cp_r("_build", dest) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason, file} ->
+            Logger.warning("Tak copy _build failed #{file}: #{inspect(reason)}")
+            :ok
+        end
+
+      rewrite_build_paths(path)
+      result
+    end
+  end
+
+  defp rewrite_build_paths(worktree_path) do
+    parent = File.cwd!() |> Path.expand()
+    child = Path.expand(worktree_path)
+
+    # Only rewrite text artefacts; skip .beam to avoid corruption
+    patterns = [
+      Path.join(worktree_path, "_build/**/*.app"),
+      Path.join(worktree_path, "_build/**/compile.*"),
+      Path.join(worktree_path, "_build/**/.mix/*"),
+      Path.join(worktree_path, "_build/**/consolidated/*"),
+      Path.join(worktree_path, "_build/**/*.lock")
+    ]
+
+    files =
+      Enum.flat_map(patterns, &Path.wildcard/1)
+      |> Enum.filter(&File.regular?/1)
+
+    Enum.each(files, fn file ->
+      case File.read(file) do
+        {:ok, content} ->
+          if String.contains?(content, parent) and not String.contains?(file, ".beam") do
+            # Only rewrite if file is textual (avoid binary)
+            if String.valid?(content) do
+              File.write!(file, String.replace(content, parent, child))
+            end
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+
+    # Reset mtimes to avoid "was set to the future" warnings
+    Path.wildcard(Path.join(worktree_path, "_build/**/*"))
+    |> Enum.each(fn f ->
+      if File.exists?(f), do: File.touch(f)
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
   end
 
   defp maybe_run_deps_get(path, opts) do

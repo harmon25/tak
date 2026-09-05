@@ -29,9 +29,9 @@ TAK_PROFILE=1 mix tak.create feature/foo --no-db
 
 When neither `--profile` nor `TAK_PROFILE=1` is set, there is **zero overhead** (no timing calls).
 
-Implementation: `lib/tak/profiling.ex:1`, `lib/tak/worktrees.ex:37`, `lib/mix/tasks/tak.create.ex:41` (adds `--copy-deps`/`--no-copy-deps`, `config :tak, copy_deps`).
+Implementation: `lib/tak/profiling.ex:1`, `lib/tak/worktrees.ex:37`, `lib/mix/tasks/tak.create.ex:41` (adds `--copy-deps`/`--no-copy-deps`, `--copy-build`/`--no-copy-build`, `config :tak, copy_deps/copy_build`).
 
-Copy optimization: `File.cp_r("deps", "trees/<name>/deps")` (~48ms small, ~469ms large 92M) + skip `deps.get` when `mix.lock` identical. Disable with `--no-copy-deps` for A/B testing.
+Copy optimization: `File.cp_r("deps", "trees/<name>/deps")` (~48ms small, ~469ms large 92M) + skip `deps.get` when `mix.lock` identical. Disable with `--no-copy-deps` for A/B testing. Opt-in `_build` copy: `File.cp_r("_build", ...)` (~60ms small 5.9M, ~253ms large 16M) + text rewrite of absolute parent → worktree path in `.app`/`.mix`/`compile.*` (skips `.beam`), `File.touch` to avoid future mtime warning.
 
 ## 2. Generating a realistic Phoenix demo
 
@@ -88,9 +88,14 @@ large 92M deps: copy_deps 469-610ms (92-93%) + deps.get 0ms → total 509-586ms 
 
 Next:
 
-- `copy_deps` now default; test via `TAK_PROFILE=1 mix tak.create bench/x armstrong --no-db` (default) vs `... --no-copy-deps` / `--copy-deps`
-- `ecto.setup` not yet optimized (still measured as `ecto.setup` row when `--db`)
-- Further win could be copying `_build` but risky (absolute paths/NIFs)
+- `copy_deps` now default; `copy_build` opt-in. Compare 3-way:
+  ```bash
+  TAK_PROFILE=1 mix tak.create bench/x armstrong --no-db --no-copy-deps --no-copy-build  # original
+  TAK_PROFILE=1 mix tak.create bench/x armstrong --no-db --copy-deps --no-copy-build      # default ~101ms small / 509ms large
+  TAK_PROFILE=1 mix tak.create bench/x armstrong --no-db --copy-deps --copy-build         # opt-in ~172ms small / 868ms large (+253ms build)
+  ```
+- `ecto.setup` not yet optimized (still measured as `ecto.setup` row when `--db`; `_build` copy helps first `mix compile` ~200ms vs 3s)
+- Test coverage now includes `test/tak/copy_build_test.exs` (rewrites text artefacts, skips `.beam`)
 
 ## 5. Test coverage
 
