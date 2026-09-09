@@ -38,6 +38,7 @@ Git worktree management for Elixir/Phoenix development.
 3. Add to `.gitignore`:
 
    ```
+   /.tak
    /config/*.local.exs
    /mise.local.toml
    /trees/

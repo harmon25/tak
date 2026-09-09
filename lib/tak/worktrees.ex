@@ -320,6 +320,7 @@ defmodule Tak.Worktrees do
     results = [
       check_dev_local_import(),
       check_gitignore("dev.local.exs", "config/dev.local.exs", required: true),
+      check_gitignore(".tak", ".tak", required: true),
       check_gitignore("mise.local.toml", "mise.local.toml",
         required: false,
         note: "only needed if using mise"

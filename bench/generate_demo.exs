@@ -190,11 +190,17 @@ end
 
 gitignore_path = Path.join(dest, ".gitignore")
 gitignore = File.read!(gitignore_path)
-extra = "/config/*.local.exs\n/mise.local.toml\n/trees/\n"
+extra = "/.tak\n/config/*.local.exs\n/mise.local.toml\n/trees/\n"
 
 unless String.contains?(gitignore, "/trees/") do
   File.write!(gitignore_path, gitignore <> "\n" <> extra)
   IO.puts("  updated .gitignore for tak")
+end
+
+# Ensure .tak is ignored even if /trees/ already present but .tak missing
+if String.contains?(gitignore, "/trees/") and not String.contains?(gitignore, ".tak") do
+  File.write!(gitignore_path, File.read!(gitignore_path) <> ".tak\n")
+  IO.puts("  updated .gitignore with .tak")
 end
 
 # Commit everything so `git worktree add` works (requires HEAD)
