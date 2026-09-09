@@ -25,6 +25,8 @@ tak-*.tar
 # Tak worktrees and metadata (created during `mix tak.create` tests)
 /trees/
 .tak
+/config/*.local.exs
+/mise.local.toml
 
 # Temporary files, for example, from tests.
 /tmp/
