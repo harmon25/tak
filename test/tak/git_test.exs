@@ -18,7 +18,9 @@ defmodule Tak.GitTest do
     end
 
     test "returns false for nonexistent branch" do
-      refute Tak.Git.branch_exists?("this-branch-definitely-does-not-exist-#{:rand.uniform(100_000)}")
+      refute Tak.Git.branch_exists?(
+               "this-branch-definitely-does-not-exist-#{:rand.uniform(100_000)}"
+             )
     end
   end
 

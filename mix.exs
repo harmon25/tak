@@ -9,6 +9,8 @@ defmodule Tak.MixProject do
       app: :tak,
       version: @version,
       elixir: "~> 1.15",
+      elixirc_paths: elixirc_paths(Mix.env()),
+      elixirc_options: [warnings_as_errors: true],
       start_permanent: Mix.env() == :prod,
       deps: deps(),
       description: description(),
@@ -16,6 +18,9 @@ defmodule Tak.MixProject do
       docs: docs()
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [

@@ -33,8 +33,17 @@ defmodule Tak.Worktrees do
   ## Options
 
     * `:create_db` - whether to create the database (default: from config)
+    * `:copy_deps` - whether to copy `deps/` from parent instead of `mix deps.get` (default: from config)
   """
   def create(branch, name, opts \\ []) do
+    if Tak.Profiling.enabled?(opts) do
+      do_create_profiled(branch, name, opts)
+    else
+      do_create(branch, name, opts)
+    end
+  end
+
+  defp do_create(branch, name, opts) do
     create_db = Keyword.get(opts, :create_db, Tak.create_database?())
 
     with {:ok, name} <- resolve_name(name),
@@ -59,7 +68,7 @@ defmodule Tak.Worktrees do
            :ok <- copy_env_file(worktree_path),
            :ok <- write_dev_local_config(worktree.path, worktree.name, worktree.port, create_db),
            :ok <- maybe_write_mise_config(worktree.path, worktree.port),
-           :ok <- bootstrap_worktree(worktree.path, create_db) do
+           :ok <- bootstrap_worktree(worktree.path, create_db, opts) do
         Tak.Metadata.write!(worktree)
         {:ok, worktree}
       else
@@ -69,6 +78,162 @@ defmodule Tak.Worktrees do
         {:error, {:bootstrap_failed, _command, _output} = reason} ->
           {:error, cleanup_after_bootstrap_failure(worktree, branch_exists?, reason)}
       end
+    end
+  end
+
+  defp do_create_profiled(branch, name, opts) do
+    create_db = Keyword.get(opts, :create_db, Tak.create_database?())
+    prof = Tak.Profiling.start()
+
+    {resolve_result, prof} =
+      Tak.Profiling.measure(prof, "resolve_name", fn -> resolve_name(name) end)
+
+    case resolve_result do
+      {:error, _} = err ->
+        {timings, total} = Tak.Profiling.finish(prof)
+        Tak.Profiling.report(timings, total)
+        err
+
+      {:ok, resolved_name} ->
+        {validate_result, prof} =
+          Tak.Profiling.measure(prof, "validate_not_exists", fn ->
+            validate_not_exists(resolved_name)
+          end)
+
+        case validate_result do
+          {:error, _} = err ->
+            {timings, total} = Tak.Profiling.finish(prof)
+            Tak.Profiling.report(timings, total)
+            err
+
+          :ok ->
+            {branch_exists?, prof} =
+              Tak.Profiling.measure(prof, "branch_exists?", fn ->
+                {Tak.Git.branch_exists?(branch), nil}
+              end)
+              |> then(fn {{val, _}, p} -> {val, p} end)
+
+            trees_dir = Tak.trees_dir()
+            worktree_path = Path.join(trees_dir, resolved_name)
+
+            worktree = %Tak.Worktree{
+              name: resolved_name,
+              branch: branch,
+              port: Tak.port_for(resolved_name),
+              path: worktree_path,
+              database: if(create_db, do: Tak.database_for(resolved_name)),
+              database_managed?: create_db
+            }
+
+            {_port_check, prof} =
+              Tak.Profiling.measure(prof, "port_check", fn ->
+                maybe_warn_port_in_use(worktree.port)
+              end)
+
+            {_mkdir, prof} =
+              Tak.Profiling.measure(prof, "mkdir_trees", fn ->
+                File.mkdir_p!(trees_dir)
+              end)
+
+            {git_result, prof} =
+              Tak.Profiling.measure(prof, "git worktree add", fn ->
+                add_git_worktree(branch, worktree_path, branch_exists?)
+              end)
+
+            case git_result do
+              {:error, {:git_failed, _, _} = reason} ->
+                {timings, total} = Tak.Profiling.finish(prof)
+                Tak.Profiling.report(timings, total)
+                {:error, reason}
+
+              {:ok, _output} ->
+                {_copy, prof} =
+                  Tak.Profiling.measure(prof, "copy_env", fn ->
+                    copy_env_file(worktree_path)
+                  end)
+
+                {cfg_result, prof} =
+                  Tak.Profiling.measure(prof, "write_dev_local", fn ->
+                    write_dev_local_config(
+                      worktree.path,
+                      worktree.name,
+                      worktree.port,
+                      create_db
+                    )
+                  end)
+
+                case cfg_result do
+                  {:error, _} = err ->
+                    {timings, total} = Tak.Profiling.finish(prof)
+                    Tak.Profiling.report(timings, total)
+                    err
+
+                  :ok ->
+                    {mise_result, prof} =
+                      Tak.Profiling.measure(prof, "mise_config", fn ->
+                        maybe_write_mise_config(worktree.path, worktree.port)
+                      end)
+
+                    case mise_result do
+                      {:error, _} = err ->
+                        {timings, total} = Tak.Profiling.finish(prof)
+                        Tak.Profiling.report(timings, total)
+                        err
+
+                      :ok ->
+                        {_copy, prof} =
+                          Tak.Profiling.measure(prof, "copy_deps", fn ->
+                            maybe_copy_deps(worktree.path, opts)
+                          end)
+
+                        {_bcopy, prof} =
+                          Tak.Profiling.measure(prof, "copy_build", fn ->
+                            maybe_copy_build(worktree.path, opts)
+                          end)
+
+                        {deps_result, prof} =
+                          Tak.Profiling.measure(prof, "deps.get", fn ->
+                            maybe_run_deps_get(worktree.path, opts)
+                          end)
+
+                        {bootstrap_outcome, prof} =
+                          case deps_result do
+                            {:error, _} = err ->
+                              {err, prof}
+
+                            {:ok, _} ->
+                              if create_db do
+                                Tak.Profiling.measure(prof, "ecto.setup", fn ->
+                                  maybe_setup_database(worktree.path, true)
+                                end)
+                              else
+                                {:ok, prof}
+                              end
+                          end
+
+                        case bootstrap_outcome do
+                          :ok ->
+                            {_meta, prof} =
+                              Tak.Profiling.measure(prof, "metadata_write", fn ->
+                                Tak.Metadata.write!(worktree)
+                              end)
+
+                            {timings, total} = Tak.Profiling.finish(prof)
+                            Tak.Profiling.report(timings, total)
+                            {:ok, worktree}
+
+                          {:error, {:bootstrap_failed, _, _} = reason} ->
+                            cleanup =
+                              cleanup_after_bootstrap_failure(worktree, branch_exists?, reason)
+
+                            {timings, total} = Tak.Profiling.finish(prof)
+                            Tak.Profiling.report(timings, total)
+                            {:error, cleanup}
+                        end
+                    end
+                end
+            end
+        end
     end
   end
 
@@ -155,6 +320,7 @@ defmodule Tak.Worktrees do
     results = [
       check_dev_local_import(),
       check_gitignore("dev.local.exs", "config/dev.local.exs", required: true),
+      check_gitignore(".tak", ".tak", required: true),
       check_gitignore("mise.local.toml", "mise.local.toml",
         required: false,
         note: "only needed if using mise"
@@ -298,11 +464,134 @@ defmodule Tak.Worktrees do
     :ok
   end
 
-  defp bootstrap_worktree(path, create_db) do
-    with {:ok, _output} <- run_mix(path, ["deps.get"]),
+  defp bootstrap_worktree(path, create_db, opts) do
+    with :ok <- maybe_copy_deps(path, opts),
+         :ok <- maybe_copy_build(path, opts),
+         {:ok, _output} <- maybe_run_deps_get(path, opts),
          :ok <- maybe_setup_database(path, create_db) do
       :ok
     end
+  end
+
+  defp maybe_copy_deps(path, opts) do
+    copy? = Keyword.get(opts, :copy_deps, Tak.copy_deps?())
+
+    if not copy? or not File.dir?("deps") do
+      :ok
+    else
+      dest = Path.join(path, "deps")
+
+      # Remove stale dest to ensure fresh copy (git worktree is fresh)
+      File.rm_rf(dest)
+
+      result =
+        case File.cp_r("deps", dest) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason, file} ->
+            Logger.warning(
+              "Tak copy deps failed #{file}: #{inspect(reason)}, falling back to deps.get"
+            )
+
+            :ok
+        end
+
+      # Also copy mix.lock if parent has it but worktree doesn't (e.g. synthetic demo where lock not yet committed)
+      parent_lock = "mix.lock"
+      worktree_lock = Path.join(path, "mix.lock")
+
+      if File.exists?(parent_lock) and not File.exists?(worktree_lock) do
+        File.cp(parent_lock, worktree_lock)
+      end
+
+      result
+    end
+  end
+
+  defp maybe_copy_build(path, opts) do
+    copy? = Keyword.get(opts, :copy_build, Tak.copy_build?())
+
+    if not copy? or not File.dir?("_build") do
+      :ok
+    else
+      dest = Path.join(path, "_build")
+      File.rm_rf(dest)
+
+      result =
+        case File.cp_r("_build", dest) do
+          {:ok, _} ->
+            :ok
+
+          {:error, reason, file} ->
+            Logger.warning("Tak copy _build failed #{file}: #{inspect(reason)}")
+            :ok
+        end
+
+      rewrite_build_paths(path)
+      result
+    end
+  end
+
+  defp rewrite_build_paths(worktree_path) do
+    parent = File.cwd!() |> Path.expand()
+    child = Path.expand(worktree_path)
+
+    # Only rewrite text artefacts; skip .beam to avoid corruption
+    patterns = [
+      Path.join(worktree_path, "_build/**/*.app"),
+      Path.join(worktree_path, "_build/**/compile.*"),
+      Path.join(worktree_path, "_build/**/.mix/*"),
+      Path.join(worktree_path, "_build/**/consolidated/*"),
+      Path.join(worktree_path, "_build/**/*.lock")
+    ]
+
+    files =
+      Enum.flat_map(patterns, &Path.wildcard/1)
+      |> Enum.filter(&File.regular?/1)
+
+    Enum.each(files, fn file ->
+      case File.read(file) do
+        {:ok, content} ->
+          if String.contains?(content, parent) and not String.contains?(file, ".beam") do
+            # Only rewrite if file is textual (avoid binary)
+            if String.valid?(content) do
+              File.write!(file, String.replace(content, parent, child))
+            end
+          end
+
+        _ ->
+          :ok
+      end
+    end)
+
+    # Reset mtimes to avoid "was set to the future" warnings
+    Path.wildcard(Path.join(worktree_path, "_build/**/*"))
+    |> Enum.each(fn f ->
+      if File.exists?(f), do: File.touch(f)
+    end)
+
+    :ok
+  rescue
+    _ -> :ok
+  end
+
+  defp maybe_run_deps_get(path, opts) do
+    copy? = Keyword.get(opts, :copy_deps, Tak.copy_deps?())
+
+    if copy? and File.dir?(Path.join(path, "deps")) and deps_in_sync?(path) do
+      {:ok, ""}
+    else
+      run_mix(path, ["deps.get"])
+    end
+  end
+
+  defp deps_in_sync?(worktree_path) do
+    parent_lock = "mix.lock"
+    worktree_lock = Path.join(worktree_path, "mix.lock")
+
+    File.exists?(parent_lock) and File.exists?(worktree_lock) and
+      File.read!(parent_lock) == File.read!(worktree_lock)
   end
 
   defp maybe_setup_database(_path, false), do: :ok

@@ -71,8 +71,6 @@ defmodule Tak.Metadata do
   defp safe_ast?(val) when is_binary(val), do: true
   defp safe_ast?(val) when is_integer(val), do: true
   defp safe_ast?(val) when is_float(val), do: true
-  defp safe_ast?(val) when is_boolean(val), do: true
-  defp safe_ast?(nil), do: true
   defp safe_ast?({val, _, nil}) when is_atom(val), do: true
   defp safe_ast?(_), do: false
 
