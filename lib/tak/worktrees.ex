@@ -464,7 +464,7 @@ defmodule Tak.Worktrees do
     :ok
   end
 
-  defp bootstrap_worktree(path, create_db, opts \\ []) do
+  defp bootstrap_worktree(path, create_db, opts) do
     with :ok <- maybe_copy_deps(path, opts),
          :ok <- maybe_copy_build(path, opts),
          {:ok, _output} <- maybe_run_deps_get(path, opts),

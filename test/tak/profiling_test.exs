@@ -173,7 +173,7 @@ defmodule Tak.ProfilingTest do
     Application.put_env(:tak, :trees_dir, trees_dir)
   end
 
-  test "create without profile prints nothing (no overhead)", %{trees_dir: trees_dir} do
+  test "create without profile prints nothing (no overhead)", %{trees_dir: _trees_dir} do
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}

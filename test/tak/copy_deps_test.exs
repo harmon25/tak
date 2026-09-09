@@ -102,7 +102,7 @@ defmodule Tak.CopyDepsTest do
            end)
   end
 
-  test "falls back to deps.get when parent has no deps", %{trees_dir: trees_dir} do
+  test "falls back to deps.get when parent has no deps", %{trees_dir: _trees_dir} do
     File.rm_rf!("deps")
 
     TestSystem.configure(fn
@@ -188,7 +188,7 @@ defmodule Tak.CopyDepsTest do
     assert output =~ "deps.get"
   end
 
-  test "deps.get not skipped when lock mismatch", %{parent: parent} do
+  test "deps.get not skipped when lock mismatch", %{parent: _parent} do
     TestSystem.configure(fn
       "git", ["show-ref" | _], _ ->
         {"", 1}
